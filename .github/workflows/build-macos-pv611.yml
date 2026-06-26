@@ -101,6 +101,25 @@ jobs:
       - name: Install plugin
         run: cmake --install build
 
+      # The plugin links Qt by absolute Homebrew path (the SDK was built against
+      # `brew install qt@6`). Loaded into the official ParaView .app — which
+      # bundles its OWN Qt — that pulls a second, different Qt into the process
+      # and aborts (two QtCore instances). Rewrite the Qt refs to @rpath so they
+      # resolve to ParaView's bundled Qt instead, then re-sign (install_name_tool
+      # invalidates the signature; arm64 refuses to load an unsigned dylib).
+      - name: Relink Qt to @rpath (use ParaView's bundled Qt)
+        run: |
+          SO=install/lib/paraview-6.0/plugins/ParaViewMCP/ParaViewMCP.so
+          otool -L "$SO" | grep -oE '/opt/homebrew/[^ ]*/Qt[A-Za-z]+\.framework/Versions/A/Qt[A-Za-z]+' | while read -r old; do
+            fw=$(basename "$old")
+            install_name_tool -change "$old" "@rpath/${fw}.framework/Versions/A/${fw}" "$SO"
+            echo "relinked: $fw"
+          done
+          codesign --force --sign - "$SO"
+          remaining=$(otool -L "$SO" | grep -c /opt/homebrew || true)
+          echo "remaining /opt/homebrew refs: $remaining"
+          test "$remaining" -eq 0
+
       - name: Package tarball
         run: |
           VERSION=0.2.0
