@@ -3,6 +3,12 @@ name: Build macOS arm64 (ParaView 6.1.1)
 # Standalone, manually-triggered build of the ParaViewMCP plugin against
 # ParaView 6.1.1 (Apple Silicon). Adapted from the `build-plugin-macos` job in
 # release.yml, decoupled from release-please so it can be run on demand.
+#
+# IMPORTANT: the plugin must be built against the SAME Qt that the official
+# ParaView 6.1.1 .app bundles (Qt 6.9.0). Homebrew's qt@6 is 6.11.x, which bakes
+# a hard `qt_version_tag_6_11` dependency into the plugin and makes the official
+# app refuse to dlopen it ("Symbol not found: _qt_version_tag_6_11"). So we fetch
+# Qt 6.9.0 via aqtinstall and build ParaView + the plugin against it.
 
 on:
   workflow_dispatch:
@@ -16,30 +22,54 @@ jobs:
     timeout-minutes: 350
     env:
       PARAVIEW_VERSION: v6.1.1
+      QT_VERSION: 6.9.0
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install dependencies
-        run: brew install cmake ninja qt@6
+      - name: Install build tools
+        run: brew install cmake ninja
 
+      # --- Qt 6.9.0 (must match ParaView 6.1.1's bundled Qt exactly) -----------
+      - name: Restore Qt cache
+        id: cache-qt
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/Qt
+          key: qt-${{ env.QT_VERSION }}-macos-clang64-v1
+
+      - name: Install Qt ${{ env.QT_VERSION }} via aqtinstall
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          python3 -m venv /tmp/aqtenv
+          /tmp/aqtenv/bin/pip install --quiet aqtinstall
+          /tmp/aqtenv/bin/aqt install-qt mac desktop "${QT_VERSION}" clang_64 \
+            -m qt5compat qtimageformats --outputdir /tmp/Qt
+          ls -d /tmp/Qt/${QT_VERSION}/macos
+
+      - name: Save Qt cache
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/Qt
+          key: qt-${{ env.QT_VERSION }}-macos-clang64-v1
+
+      # --- ParaView 6.1.1 SDK, built against Qt 6.9.0 --------------------------
       # Restore-only so a half-built SDK from a failed run is never cached.
       - name: Restore ParaView SDK cache
         id: cache-paraview
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: /tmp/paraview-sdk
-          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt6-v1
+          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt${{ env.QT_VERSION }}-v1
 
       - name: Build ParaView SDK
         if: steps.cache-paraview.outputs.cache-hit != 'true'
         run: |
+          QT_PREFIX="/tmp/Qt/${QT_VERSION}/macos"
           git clone --recursive --branch ${{ env.PARAVIEW_VERSION }} --depth 1 \
             https://gitlab.kitware.com/paraview/paraview.git /tmp/paraview-src
-          # Newer Homebrew Qt6 rejects QString::arg() on Qt::MouseButton(s)/
-          # KeyboardModifiers enums. Idempotent normalizer: wrap them in
-          # static_cast<int>. Upstream 6.1.1 already casts buttons()/modifiers()
-          # in Qt/Core (so this is a no-op there); this also covers the bundled
-          # vtkqttesting sources if they still need it.
+          # Idempotent Qt6 .arg(enum) cast normalizer. Almost certainly a no-op at
+          # Qt 6.9.0 (ParaView 6.1.1's tested Qt), but harmless and protective.
           cd /tmp/paraview-src
           for f in \
             "Qt/Core/pqFlatTreeViewEventTranslator.cxx" \
@@ -53,8 +83,6 @@ jobs:
                 s/\.arg\(mouseEvent->modifiers\(\)\)/.arg(static_cast<int>(mouseEvent->modifiers()))/g;
               ' "$f"
               echo "normalized: $f"
-            else
-              echo "skip (not present): $f"
             fi
           done
           cmake \
@@ -73,7 +101,7 @@ jobs:
             -DPARAVIEW_ENABLE_WEB=OFF \
             -DPARAVIEW_ENABLE_EXAMPLES=OFF \
             -DVTK_WRAP_PYTHON=ON \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)"
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX"
           cmake --build /tmp/paraview-build --parallel $(sysctl -n hw.ncpu)
           cmake --install /tmp/paraview-build
 
@@ -82,15 +110,17 @@ jobs:
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: /tmp/paraview-sdk
-          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt6-v1
+          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt${{ env.QT_VERSION }}-v1
 
+      # --- Plugin, built against the same Qt 6.9.0 ----------------------------
       - name: Configure plugin
         run: |
+          QT_PREFIX="/tmp/Qt/${QT_VERSION}/macos"
           cmake \
             -S . \
             -B build \
             -G Ninja \
-            -DCMAKE_PREFIX_PATH="/tmp/paraview-sdk;$(brew --prefix qt@6)" \
+            -DCMAKE_PREFIX_PATH="/tmp/paraview-sdk;$QT_PREFIX" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=$PWD/install \
             -DBUILD_TESTING=OFF
@@ -101,24 +131,25 @@ jobs:
       - name: Install plugin
         run: cmake --install build
 
-      # The plugin links Qt by absolute Homebrew path (the SDK was built against
-      # `brew install qt@6`). Loaded into the official ParaView .app — which
-      # bundles its OWN Qt — that pulls a second, different Qt into the process
-      # and aborts (two QtCore instances). Rewrite the Qt refs to @rpath so they
-      # resolve to ParaView's bundled Qt instead, then re-sign (install_name_tool
-      # invalidates the signature; arm64 refuses to load an unsigned dylib).
+      # The plugin links Qt by absolute path (aqt's /tmp/Qt/...). Loaded into the
+      # official ParaView .app — which bundles its OWN Qt — those paths don't
+      # exist on the user's machine. Rewrite the Qt refs to @rpath so they resolve
+      # to ParaView's bundled Qt, then re-sign (install_name_tool invalidates the
+      # signature; arm64 refuses to load an unsigned dylib).
       - name: Relink Qt to @rpath (use ParaView's bundled Qt)
         run: |
           SO=install/lib/paraview-6.0/plugins/ParaViewMCP/ParaViewMCP.so
-          otool -L "$SO" | grep -oE '/opt/homebrew/[^ ]*/Qt[A-Za-z]+\.framework/Versions/A/Qt[A-Za-z]+' | while read -r old; do
+          otool -L "$SO" | grep -oE '/[^ @][^ ]*/Qt[A-Za-z]+\.framework/Versions/A/Qt[A-Za-z]+' | while read -r old; do
             fw=$(basename "$old")
             install_name_tool -change "$old" "@rpath/${fw}.framework/Versions/A/${fw}" "$SO"
             echo "relinked: $fw"
           done
           codesign --force --sign - "$SO"
-          remaining=$(otool -L "$SO" | grep -c /opt/homebrew || true)
-          echo "remaining /opt/homebrew refs: $remaining"
+          remaining=$(otool -L "$SO" | grep -cE '/[^ @][^ ]*/Qt[A-Za-z]+\.framework' || true)
+          echo "remaining absolute Qt refs: $remaining"
           test "$remaining" -eq 0
+          echo "=== qt_version_tag the plugin now requires (must be 6_9) ==="
+          nm -u "$SO" | grep -i qt_version_tag || true
 
       - name: Package tarball
         run: |
