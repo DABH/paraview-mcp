@@ -45,7 +45,8 @@ jobs:
   cpp-coverage:
     name: C++ Coverage
     runs-on: ubuntu-latest
-    container: ghcr.io/${{ github.repository }}-ci:6.0.1
+    # Use the upstream-published CI image (forks don't have their own).
+    container: ghcr.io/failed33/paraview-mcp-ci:6.0.1
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Configure

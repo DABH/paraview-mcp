@@ -9,7 +9,7 @@ set(BUILD_SHARED_LIBS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(
-  ParaView 6.1 REQUIRED
+  ParaView REQUIRED
   COMPONENTS
     pqApplicationComponents
     pqComponents
