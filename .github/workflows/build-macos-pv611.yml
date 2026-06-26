@@ -1,0 +1,123 @@
+name: Build macOS arm64 (ParaView 6.1.1)
+
+# Standalone, manually-triggered build of the ParaViewMCP plugin against
+# ParaView 6.1.1 (Apple Silicon). Adapted from the `build-plugin-macos` job in
+# release.yml, decoupled from release-please so it can be run on demand.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-plugin-macos:
+    runs-on: macos-14
+    timeout-minutes: 350
+    env:
+      PARAVIEW_VERSION: v6.1.1
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install dependencies
+        run: brew install cmake ninja qt@6
+
+      # Restore-only so a half-built SDK from a failed run is never cached.
+      - name: Restore ParaView SDK cache
+        id: cache-paraview
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/paraview-sdk
+          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt6-v1
+
+      - name: Build ParaView SDK
+        if: steps.cache-paraview.outputs.cache-hit != 'true'
+        run: |
+          git clone --recursive --branch ${{ env.PARAVIEW_VERSION }} --depth 1 \
+            https://gitlab.kitware.com/paraview/paraview.git /tmp/paraview-src
+          # Newer Homebrew Qt6 rejects QString::arg() on Qt::MouseButton(s)/
+          # KeyboardModifiers enums. Idempotent normalizer: wrap them in
+          # static_cast<int>. Upstream 6.1.1 already casts buttons()/modifiers()
+          # in Qt/Core (so this is a no-op there); this also covers the bundled
+          # vtkqttesting sources if they still need it.
+          cd /tmp/paraview-src
+          for f in \
+            "Qt/Core/pqFlatTreeViewEventTranslator.cxx" \
+            "Qt/Core/pqQVTKWidgetEventTranslator.cxx" \
+            "ThirdParty/QtTesting/vtkqttesting/pqAbstractItemViewEventTranslator.cxx" \
+            "ThirdParty/QtTesting/vtkqttesting/pqBasicWidgetEventTranslator.cxx"; do
+            if [ -f "$f" ]; then
+              perl -0777 -pi -e '
+                s/\.arg\(mouseEvent->button\(\)\)/.arg(static_cast<int>(mouseEvent->button()))/g;
+                s/\.arg\(mouseEvent->buttons\(\)\)/.arg(static_cast<int>(mouseEvent->buttons()))/g;
+                s/\.arg\(mouseEvent->modifiers\(\)\)/.arg(static_cast<int>(mouseEvent->modifiers()))/g;
+              ' "$f"
+              echo "normalized: $f"
+            else
+              echo "skip (not present): $f"
+            fi
+          done
+          cmake \
+            -S /tmp/paraview-src \
+            -B /tmp/paraview-build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/tmp/paraview-sdk \
+            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_TESTING=OFF \
+            -DPARAVIEW_BUILD_QT_GUI=ON \
+            -DPARAVIEW_USE_QT=ON \
+            -DPARAVIEW_ENABLE_PYTHON=ON \
+            -DPARAVIEW_USE_PYTHON=ON \
+            -DPARAVIEW_USE_MPI=OFF \
+            -DPARAVIEW_ENABLE_WEB=OFF \
+            -DPARAVIEW_ENABLE_EXAMPLES=OFF \
+            -DVTK_WRAP_PYTHON=ON \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)"
+          cmake --build /tmp/paraview-build --parallel $(sysctl -n hw.ncpu)
+          cmake --install /tmp/paraview-build
+
+      - name: Save ParaView SDK cache
+        if: steps.cache-paraview.outputs.cache-hit != 'true'
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/paraview-sdk
+          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt6-v1
+
+      - name: Configure plugin
+        run: |
+          cmake \
+            -S . \
+            -B build \
+            -G Ninja \
+            -DCMAKE_PREFIX_PATH="/tmp/paraview-sdk;$(brew --prefix qt@6)" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$PWD/install \
+            -DBUILD_TESTING=OFF
+
+      - name: Build plugin
+        run: cmake --build build --parallel $(sysctl -n hw.ncpu)
+
+      - name: Install plugin
+        run: cmake --install build
+
+      - name: Package tarball
+        run: |
+          VERSION=0.2.0
+          ARCHIVE_DIR="ParaViewMCP-${VERSION}-ParaView-6.1.1-macos-arm64"
+          mkdir -p "${ARCHIVE_DIR}"
+          cp install/lib/paraview-6.0/plugins/ParaViewMCP/ParaViewMCP.so "${ARCHIVE_DIR}/"
+          cp install/lib/paraview-6.0/plugins/ParaViewMCP.plugins.xml "${ARCHIVE_DIR}/"
+          cp LICENSE "${ARCHIVE_DIR}/"
+          cp THIRD-PARTY-NOTICES.txt "${ARCHIVE_DIR}/"
+          cp -r LICENSES "${ARCHIVE_DIR}/"
+          sed 's/6\.0\.1/6.1.1/g' .github/INSTALL_PLUGIN.md > "${ARCHIVE_DIR}/INSTALL.md"
+          tar czf "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}"
+          echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: plugin-macos-arm64-pv6.1.1
+          path: ${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
