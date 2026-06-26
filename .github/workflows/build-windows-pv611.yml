@@ -1,0 +1,100 @@
+name: Build Windows x64 (ParaView 6.1.1)
+
+# Builds the ParaViewMCP plugin for Windows x64 against the OFFICIAL ParaView
+# 6.1.1 Windows binary's bundled SDK (lib/cmake/paraview-6.1). Unlike the macOS
+# .app, the Windows .zip ships development files (PARAVIEW_INSTALL_DEVELOPMENT_-
+# FILES defaults ON), so no ParaView source build is needed. Qt headers are NOT
+# in the SDK, so we fetch Qt 6.9.0 (the version ParaView 6.1.1 bundles) via
+# aqtinstall to compile against; at runtime the plugin uses ParaView's bundled
+# Qt (Windows resolves Qt6*.dll by name from the application directory).
+#
+# Implements the Windows-plugin request in failed33/paraview-mcp#31.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PARAVIEW_URL: https://www.paraview.org/files/v6.1/ParaView-6.1.1-Windows-Python3.12-msvc2017-AMD64.zip
+  QT_VERSION: 6.9.0
+
+jobs:
+  build-plugin-windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Qt ${{ env.QT_VERSION }} via aqtinstall
+        shell: pwsh
+        run: |
+          python -m pip install --quiet aqtinstall
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 `
+            -m qt5compat qtimageformats --outputdir C:\Qt
+          $qt = "C:/Qt/$env:QT_VERSION/msvc2022_64"
+          if (-not (Test-Path $qt)) { Write-Error "Qt not found at $qt"; exit 1 }
+          "QT_PREFIX=$qt" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Download and extract ParaView 6.1.1 (with bundled SDK)
+        shell: pwsh
+        run: |
+          curl.exe -L --retry 3 -o pv.zip "$env:PARAVIEW_URL"
+          7z x pv.zip -oParaView > $null
+          $root = (Get-ChildItem ParaView -Directory | Select-Object -First 1).FullName
+          Write-Host "ParaView root: $root"
+          $cfg = Get-ChildItem -Path $root -Recurse -Filter paraview-config.cmake -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $cfg) {
+            Write-Error "No ParaView SDK (paraview-config.cmake) found in the Windows binary. A from-source ParaView build would be required."
+            exit 1
+          }
+          $pvdir = (Split-Path $cfg.FullName) -replace '\\','/'
+          Write-Host "ParaView_DIR: $pvdir"
+          "PARAVIEW_DIR=$pvdir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # Confirm the bundled Qt matches what we compile against (sanity only).
+          $qtcore = Get-ChildItem -Path $root -Recurse -Filter Qt6Core.dll -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+          if ($qtcore) { Write-Host ("Bundled Qt6Core.dll version: " + $qtcore.VersionInfo.ProductVersion) }
+          else { Write-Host "WARNING: no bundled Qt6Core.dll found under $root" }
+
+      - name: Configure plugin
+        shell: bash
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 \
+            -DParaView_DIR="$PARAVIEW_DIR" \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
+            -DCMAKE_INSTALL_PREFIX="$(pwd)/install" \
+            -DBUILD_TESTING=OFF
+
+      - name: Build plugin
+        shell: bash
+        run: cmake --build build --config Release --parallel
+
+      - name: Install plugin
+        shell: bash
+        run: cmake --install build --config Release
+
+      - name: Package zip
+        shell: bash
+        run: |
+          DLL=$(find install -name 'ParaViewMCP.dll' | head -1)
+          XML=$(find install -name 'ParaViewMCP.plugins.xml' | head -1)
+          if [ -z "$DLL" ]; then echo "ParaViewMCP.dll not found in install tree"; find install | head -50; exit 1; fi
+          DIR="ParaViewMCP-0.2.0-ParaView-6.1.1-windows-x64"
+          mkdir -p "$DIR"
+          cp "$DLL" "$DIR/"
+          [ -n "$XML" ] && cp "$XML" "$DIR/"
+          cp LICENSE THIRD-PARTY-NOTICES.txt "$DIR/"
+          cp -r LICENSES "$DIR/"
+          sed 's/6\.0\.1/6.1.1/g; s/ParaViewMCP\.so/ParaViewMCP.dll/g' .github/INSTALL_PLUGIN.md > "$DIR/INSTALL.md"
+          7z a "$DIR.zip" "$DIR" > /dev/null
+          echo "ARCHIVE_NAME=$DIR.zip" >> "$GITHUB_ENV"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: plugin-windows-x64-pv6.1.1
+          path: ${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
