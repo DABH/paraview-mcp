@@ -1,14 +1,20 @@
 name: Build Windows x64 (ParaView 6.1.1)
 
-# Builds the ParaViewMCP plugin for Windows x64 against the OFFICIAL ParaView
-# 6.1.1 Windows binary's bundled SDK (lib/cmake/paraview-6.1). Unlike the macOS
-# .app, the Windows .zip ships development files (PARAVIEW_INSTALL_DEVELOPMENT_-
-# FILES defaults ON), so no ParaView source build is needed. Qt headers are NOT
-# in the SDK, so we fetch Qt 6.9.0 (the version ParaView 6.1.1 bundles) via
-# aqtinstall to compile against; at runtime the plugin uses ParaView's bundled
-# Qt (Windows resolves Qt6*.dll by name from the application directory).
+# Builds the ParaViewMCP plugin for Windows x64. The official ParaView 6.1.1
+# Windows .zip ships NO SDK (no paraview-config.cmake) — same as the macOS .app —
+# so, like the macOS job, this compiles ParaView 6.1.1 from source (MSVC + Ninja)
+# against Qt 6.9.0 (the version ParaView 6.1.1 bundles), then builds the plugin
+# against that SDK. The plugin's TCP bridge uses Qt networking, so it is
+# cross-platform; no winsock porting is required. On Windows, Qt6*.dll / ParaView
+# DLLs are resolved by name at load time from the application directory, so no
+# rpath rewriting is needed (building against the matching Qt 6.9.0 is what makes
+# it loadable into the official binary).
 #
-# Implements the Windows-plugin request in failed33/paraview-mcp#31.
+# Implements failed33/paraview-mcp#31.
+#
+# NOTE: a from-source ParaView build on a standard Windows runner is slow and may
+# approach the 6 h job limit on the first (uncached) run; the SDK is cached so
+# re-runs only rebuild the plugin.
 
 on:
   workflow_dispatch:
@@ -17,71 +23,109 @@ permissions:
   contents: read
 
 env:
-  PARAVIEW_URL: https://www.paraview.org/files/v6.1/ParaView-6.1.1-Windows-Python3.12-msvc2017-AMD64.zip
+  PARAVIEW_VERSION: v6.1.1
   QT_VERSION: 6.9.0
 
 jobs:
   build-plugin-windows:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y --no-progress
 
       - name: Install Qt ${{ env.QT_VERSION }} via aqtinstall
         shell: pwsh
         run: |
           python -m pip install --quiet aqtinstall
           python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 `
-            -m qt5compat qtimageformats --outputdir C:\Qt
-          $qt = "C:/Qt/$env:QT_VERSION/msvc2022_64"
+            -m qt5compat qtimageformats --outputdir D:\Qt
+          $qt = "D:/Qt/$env:QT_VERSION/msvc2022_64"
           if (-not (Test-Path $qt)) { Write-Error "Qt not found at $qt"; exit 1 }
           "QT_PREFIX=$qt" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Download and extract ParaView 6.1.1 (with bundled SDK)
+      # --- ParaView 6.1.1 SDK from source (MSVC), built against Qt 6.9.0 -------
+      - name: Restore ParaView SDK cache
+        id: cache-pv
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: D:\pv-sdk
+          key: paraview-win-${{ env.PARAVIEW_VERSION }}-qt${{ env.QT_VERSION }}-msvc2022-v1
+
+      - name: Clone and patch ParaView source
+        if: steps.cache-pv.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --recursive --branch "$PARAVIEW_VERSION" --depth 1 \
+            https://gitlab.kitware.com/paraview/paraview.git /d/pv-src
+          cd /d/pv-src
+          # Idempotent Qt6 .arg(enum) cast normalizer (no-op at Qt 6.9.0, but safe).
+          for f in \
+            "Qt/Core/pqFlatTreeViewEventTranslator.cxx" \
+            "Qt/Core/pqQVTKWidgetEventTranslator.cxx" \
+            "ThirdParty/QtTesting/vtkqttesting/pqAbstractItemViewEventTranslator.cxx" \
+            "ThirdParty/QtTesting/vtkqttesting/pqBasicWidgetEventTranslator.cxx"; do
+            if [ -f "$f" ]; then
+              perl -0777 -pi -e '
+                s/\.arg\(mouseEvent->button\(\)\)/.arg(static_cast<int>(mouseEvent->button()))/g;
+                s/\.arg\(mouseEvent->buttons\(\)\)/.arg(static_cast<int>(mouseEvent->buttons()))/g;
+                s/\.arg\(mouseEvent->modifiers\(\)\)/.arg(static_cast<int>(mouseEvent->modifiers()))/g;
+              ' "$f"
+            fi
+          done
+
+      - name: Build ParaView SDK
+        if: steps.cache-pv.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          curl.exe -L --retry 3 -o pv.zip "$env:PARAVIEW_URL"
-          7z x pv.zip -oParaView > $null
-          $root = (Get-ChildItem ParaView -Directory | Select-Object -First 1).FullName
-          Write-Host "ParaView root: $root"
-          $cfg = Get-ChildItem -Path $root -Recurse -Filter paraview-config.cmake -ErrorAction SilentlyContinue |
-                 Select-Object -First 1
-          if (-not $cfg) {
-            Write-Error "No ParaView SDK (paraview-config.cmake) found in the Windows binary. A from-source ParaView build would be required."
-            exit 1
-          }
-          $pvdir = (Split-Path $cfg.FullName) -replace '\\','/'
-          Write-Host "ParaView_DIR: $pvdir"
-          "PARAVIEW_DIR=$pvdir" | Out-File -FilePath $env:GITHUB_ENV -Append
-          # Confirm the bundled Qt matches what we compile against (sanity only).
-          $qtcore = Get-ChildItem -Path $root -Recurse -Filter Qt6Core.dll -ErrorAction SilentlyContinue |
-                    Select-Object -First 1
-          if ($qtcore) { Write-Host ("Bundled Qt6Core.dll version: " + $qtcore.VersionInfo.ProductVersion) }
-          else { Write-Host "WARNING: no bundled Qt6Core.dll found under $root" }
+          cmake -S D:/pv-src -B D:/pv-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX=D:/pv-sdk `
+            -DBUILD_SHARED_LIBS=ON `
+            -DBUILD_TESTING=OFF `
+            -DPARAVIEW_USE_QT=ON `
+            -DPARAVIEW_USE_PYTHON=ON `
+            -DPARAVIEW_USE_MPI=OFF `
+            -DPARAVIEW_ENABLE_WEB=OFF `
+            -DPARAVIEW_ENABLE_EXAMPLES=OFF `
+            -DVTK_WRAP_PYTHON=ON `
+            -DCMAKE_PREFIX_PATH="$env:QT_PREFIX"
+          cmake --build D:/pv-build --parallel
+          cmake --install D:/pv-build
 
-      - name: Configure plugin
-        shell: bash
-        run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 \
-            -DParaView_DIR="$PARAVIEW_DIR" \
-            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
-            -DCMAKE_INSTALL_PREFIX="$(pwd)/install" \
-            -DBUILD_TESTING=OFF
+      - name: Save ParaView SDK cache
+        if: steps.cache-pv.outputs.cache-hit != 'true'
+        uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: D:\pv-sdk
+          key: paraview-win-${{ env.PARAVIEW_VERSION }}-qt${{ env.QT_VERSION }}-msvc2022-v1
 
+      # --- Plugin, built against the same Qt 6.9.0 ----------------------------
       - name: Build plugin
-        shell: bash
-        run: cmake --build build --config Release --parallel
-
-      - name: Install plugin
-        shell: bash
-        run: cmake --install build --config Release
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="D:/pv-sdk;$env:QT_PREFIX" `
+            -DCMAKE_INSTALL_PREFIX="$($PWD.Path)/install" `
+            -DBUILD_TESTING=OFF
+          cmake --build build --parallel
+          cmake --install build
 
       - name: Package zip
         shell: bash
         run: |
           DLL=$(find install -name 'ParaViewMCP.dll' | head -1)
           XML=$(find install -name 'ParaViewMCP.plugins.xml' | head -1)
-          if [ -z "$DLL" ]; then echo "ParaViewMCP.dll not found in install tree"; find install | head -50; exit 1; fi
+          if [ -z "$DLL" ]; then echo "ParaViewMCP.dll not found"; find install | head -50; exit 1; fi
           DIR="ParaViewMCP-0.2.0-ParaView-6.1.1-windows-x64"
           mkdir -p "$DIR"
           cp "$DLL" "$DIR/"
