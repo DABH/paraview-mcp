@@ -109,6 +109,7 @@ target_link_libraries(
   PUBLIC
     ParaView::pqApplicationComponents
     ParaView::pqComponents
+    ParaView::pqPython
     VTK::PythonInterpreter
     ${paraview_mcp_qt_targets}
 )
