@@ -167,8 +167,8 @@ void ParaViewMCPPopup::showRelativeTo(QWidget* anchor)
   this->adjustSize();
   const QSize popupSize = this->sizeHint().expandedTo(this->size());
 
-  QScreen* screen = (anchor != nullptr && anchor->screen() != nullptr) ? anchor->screen()
-                                                                       : this->screen();
+  QScreen* screen =
+    (anchor != nullptr && anchor->screen() != nullptr) ? anchor->screen() : this->screen();
   if (screen == nullptr)
   {
     screen = QGuiApplication::primaryScreen();
@@ -186,9 +186,8 @@ void ParaViewMCPPopup::showRelativeTo(QWidget* anchor)
   }
   else
   {
-    const QRect ref = (anchor != nullptr)
-                        ? QRect(anchor->mapToGlobal(QPoint(0, 0)), anchor->size())
-                        : available;
+    const QRect ref =
+      (anchor != nullptr) ? QRect(anchor->mapToGlobal(QPoint(0, 0)), anchor->size()) : available;
     pos = ref.center() - QPoint(popupSize.width() / 2, popupSize.height() / 2);
   }
 
