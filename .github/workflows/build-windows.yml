@@ -10,6 +10,14 @@ name: Build Windows x64 (ParaView 6.1.1)
 # rpath rewriting is needed (building against the matching Qt 6.9.0 is what makes
 # it loadable into the official binary).
 #
+# Python must match the same way: the official 6.1.1 binaries bundle Python 3.12
+# (ParaView-6.1.1-Windows-Python3.12-msvc2017-AMD64.zip ships python312.dll) and
+# the plugin compiles against the Python C API, so a plugin built with any other
+# Python bakes in a pythonXY.dll import that does not exist in the official
+# install and fails to load with "The specified module could not be found".
+# Hence the SDK and the plugin are both built with a pinned Python 3.12; only
+# major.minor matters (the DLL name and C ABI are stable across 3.12.x patches).
+#
 # Implements failed33/paraview-mcp#31.
 #
 # NOTE: a from-source ParaView build on a standard Windows runner is slow and may
@@ -25,6 +33,9 @@ permissions:
 env:
   PARAVIEW_VERSION: v6.1.1
   QT_VERSION: 6.9.0
+  # Python bundled by the official ParaView 6.1.1 binaries (see header). Only
+  # major.minor must match; setup-python resolves the latest 3.12.x patch.
+  PYTHON_VERSION: '3.12'
 
 jobs:
   build-plugin-windows:
@@ -32,6 +43,11 @@ jobs:
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }} (ParaView 6.1.1's bundled Python)
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Set up MSVC (x64)
         uses: ilammy/msvc-dev-cmd@v1
@@ -58,7 +74,7 @@ jobs:
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: D:\pv-sdk
-          key: paraview-win-${{ env.PARAVIEW_VERSION }}-qt${{ env.QT_VERSION }}-msvc2022-v1
+          key: paraview-win-${{ env.PARAVIEW_VERSION }}-qt${{ env.QT_VERSION }}-py${{ env.PYTHON_VERSION }}-msvc2022-v1
 
       - name: Clone and patch ParaView source
         if: steps.cache-pv.outputs.cache-hit != 'true'
@@ -86,6 +102,8 @@ jobs:
         if: steps.cache-pv.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          $py = ($env:pythonLocation -replace '\\','/') + '/python.exe'
+          & $py --version
           cmake -S D:/pv-src -B D:/pv-build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_INSTALL_PREFIX=D:/pv-sdk `
@@ -97,6 +115,8 @@ jobs:
             -DPARAVIEW_ENABLE_WEB=OFF `
             -DPARAVIEW_ENABLE_EXAMPLES=OFF `
             -DVTK_WRAP_PYTHON=ON `
+            -DPython3_EXECUTABLE="$py" `
+            -DPython3_FIND_REGISTRY=NEVER `
             -DCMAKE_PREFIX_PATH="$env:QT_PREFIX"
           cmake --build D:/pv-build --parallel
           cmake --install D:/pv-build
@@ -106,19 +126,43 @@ jobs:
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: D:\pv-sdk
-          key: paraview-win-${{ env.PARAVIEW_VERSION }}-qt${{ env.QT_VERSION }}-msvc2022-v1
+          key: paraview-win-${{ env.PARAVIEW_VERSION }}-qt${{ env.QT_VERSION }}-py${{ env.PYTHON_VERSION }}-msvc2022-v1
 
       # --- Plugin, built against the same Qt 6.9.0 ----------------------------
       - name: Build plugin
         shell: pwsh
         run: |
+          $py = ($env:pythonLocation -replace '\\','/') + '/python.exe'
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_PREFIX_PATH="D:/pv-sdk;$env:QT_PREFIX" `
             -DCMAKE_INSTALL_PREFIX="$($PWD.Path)/install" `
+            -DPython3_EXECUTABLE="$py" `
+            -DPython3_FIND_REGISTRY=NEVER `
             -DBUILD_TESTING=OFF
           cmake --build build --parallel
           cmake --install build
+
+      # Guard against the exact failure seen in the field: a plugin built with a
+      # newer Python imports pythonXY.dll by that name, the official ParaView
+      # only ships python312.dll, and LoadLibrary fails with "The specified
+      # module could not be found". Fail the build if the import is wrong.
+      - name: Verify plugin imports ParaView's bundled Python DLL
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem install -Recurse -Filter ParaViewMCP.dll | Select-Object -First 1
+          if (-not $dll) { Write-Error 'ParaViewMCP.dll not found'; exit 1 }
+          $deps = dumpbin /dependents $dll.FullName
+          $deps | Write-Output
+          $expected = 'python' + ($env:PYTHON_VERSION -replace '\.','') + '.dll'
+          $pyImports = @($deps | Select-String -Pattern 'python3\d+\.dll' -AllMatches |
+            ForEach-Object { $_.Matches } | ForEach-Object { $_.Value.ToLower() } |
+            Sort-Object -Unique)
+          Write-Output "Python imports: [$($pyImports -join ', ')] (expected: $expected)"
+          if ($pyImports.Count -ne 1 -or $pyImports[0] -ne $expected) {
+            Write-Error "Plugin must import exactly $expected — that is the Python the official ParaView 6.1.1 binary bundles; anything else cannot load."
+            exit 1
+          }
 
       - name: Package zip
         shell: bash
