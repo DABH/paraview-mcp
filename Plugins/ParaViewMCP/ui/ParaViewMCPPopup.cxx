@@ -192,8 +192,10 @@ void ParaViewMCPPopup::showRelativeTo(QWidget* anchor)
   }
 
   // Keep the popup fully within the screen's available area.
-  pos.setX(qBound(available.left(), pos.x(), available.right() - popupSize.width()));
-  pos.setY(qBound(available.top(), pos.y(), available.bottom() - popupSize.height()));
+  const int maxX = qMax(available.left(), available.x() + available.width() - popupSize.width());
+  const int maxY = qMax(available.top(), available.y() + available.height() - popupSize.height());
+  pos.setX(qBound(available.left(), pos.x(), maxX));
+  pos.setY(qBound(available.top(), pos.y(), maxY));
 
   this->move(pos);
   this->show();
