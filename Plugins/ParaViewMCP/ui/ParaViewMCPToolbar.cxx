@@ -4,12 +4,11 @@
 #include "ParaViewMCPStateAppearance.h"
 #include "bridge/ParaViewMCPBridgeController.h"
 
-#include <pqCoreUtilities.h>
-
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QPalette>
 #include <QToolButton>
 
 ParaViewMCPToolbar::ParaViewMCPToolbar(const QString& title, QWidget* parent)
@@ -83,9 +82,9 @@ void ParaViewMCPToolbar::changeEvent(QEvent* event)
 
 void ParaViewMCPToolbar::updateIcon()
 {
-  const QString iconPath = pqCoreUtilities::isDarkTheme()
-                             ? QStringLiteral(":/ParaViewMCP/mcp-icon-for-dark-theme.png")
-                             : QStringLiteral(":/ParaViewMCP/mcp-icon-for-light-theme.png");
+  const bool darkTheme = this->palette().color(QPalette::Window).lightness() < 128;
+  const QString iconPath = darkTheme ? QStringLiteral(":/ParaViewMCP/mcp-icon-for-dark-theme.png")
+                                     : QStringLiteral(":/ParaViewMCP/mcp-icon-for-light-theme.png");
   this->Button->setIcon(QIcon(iconPath));
 }
 
