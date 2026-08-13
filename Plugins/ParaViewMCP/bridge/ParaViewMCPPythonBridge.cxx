@@ -1,4 +1,4 @@
-#include "vtkPython.h"
+#include <Python.h>
 
 #include "ParaViewMCPPythonBridge.h"
 

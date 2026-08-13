@@ -5,6 +5,14 @@ set -euxo pipefail
 : "${ARCHIVE_DIR:?ARCHIVE_DIR is required}"
 : "${PARAVIEW_SERIES:?PARAVIEW_SERIES is required}"
 
+if [[ "$PARAVIEW_SERIES" != "6.1" ]]; then
+  vtk_dependencies=$(find /builds/gitlab-kitware-sciviz-ci/build/install \
+    -name 'vtk-vtk-module-find-packages.cmake' -print -quit)
+  test -n "$vtk_dependencies"
+  grep -n -B 3 -A 8 -E \
+    'LibXml2|HDF5|Boost|NetCDF|catalyst|LibPROJ' "$vtk_dependencies"
+fi
+
 cmake \
   -S . \
   -B build \

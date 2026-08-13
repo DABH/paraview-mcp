@@ -97,7 +97,9 @@ set_target_properties(
 
 target_include_directories(
   ParaViewMCPBridgeCore
+  BEFORE
   PUBLIC
+    ${Python3_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/bridge
     ${CMAKE_CURRENT_SOURCE_DIR}/lifecycle
@@ -107,6 +109,7 @@ target_include_directories(
 target_link_libraries(
   ParaViewMCPBridgeCore
   PUBLIC
+    Python3::Python
     ParaView::pqApplicationComponents
     ParaView::pqComponents
     ParaView::pqPython
