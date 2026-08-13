@@ -43,17 +43,21 @@ jobs:
           - paraview_version: 5.13.3
             paraview_series: '5.13'
             builder_image: kitware/paraview_org-plugin-devel:5.13.3@sha256:36177a24147a76a36db9cf17e55882b64351f6a8e9b8bf1aaf11ef3510ee0608
+            toolset: devtoolset-7
           - paraview_version: 6.0.1
             paraview_series: '6.0'
             builder_image: kitware/paraview_org-plugin-devel:6.0.1@sha256:b2113520d9ac56df3c07807c6f4104cb7859fb00789325e4906a3eab3367da74
+            toolset: gcc-toolset-10
           - paraview_version: 6.1.1
             paraview_series: '6.1'
             builder_image: kitware/paraview_org-plugin-devel:6.1.1@sha256:d6798bd1ba18c9bf3431b0809b6900536ec59ace8232343133b112f7c2dbbe9c
+            toolset: gcc-toolset-10
     env:
       BUILDER_IMAGE: ${{ matrix.builder_image }}
       PACKAGE_VERSION: ${{ inputs.package_version }}
       PARAVIEW_VERSION: ${{ matrix.paraview_version }}
       PARAVIEW_SERIES: ${{ matrix.paraview_series }}
+      TOOLSET: ${{ matrix.toolset }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -78,7 +82,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --workdir /workspace \
             "$BUILDER_IMAGE" \
-            /bin/bash -euxo pipefail -c '
+            /usr/bin/scl enable "$TOOLSET" -- /bin/bash -euxo pipefail -c '
               paraview_dir=
               for candidate in \
                 /builds/gitlab-kitware-sciviz-ci/build/install/lib*/cmake/paraview-${PARAVIEW_SERIES}; do
@@ -95,6 +99,7 @@ jobs:
                 -B build \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX=/workspace/install \
+                -DCMAKE_PREFIX_PATH=/builds/gitlab-kitware-sciviz-ci/build/install \
                 -DParaView_DIR="$paraview_dir" \
                 -DBUILD_TESTING=OFF
               cmake --build build --parallel 2
