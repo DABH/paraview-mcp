@@ -14,10 +14,20 @@ name: Build Windows x64 (ParaView 5.13-6.1)
 # re-runs only rebuild the plugin.
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/build-windows.yml
+      - CMakeLists.txt
+      - CMake/**
+      - Plugins/**
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-plugin-windows:
@@ -25,6 +35,7 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           - paraview_version: v5.13.3

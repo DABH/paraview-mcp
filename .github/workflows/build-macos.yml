@@ -12,10 +12,20 @@ name: Build macOS arm64 (ParaView 5.13-6.1)
 # and is loaded into ParaView's embedded interpreter.
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/build-macos.yml
+      - CMakeLists.txt
+      - CMake/**
+      - Plugins/**
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-plugin-macos:
@@ -23,6 +33,7 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
           - paraview_version: v5.13.3
