@@ -16,17 +16,27 @@ name: Build Windows x64 (ParaView 5.13-6.1)
 on:
   pull_request:
     paths:
+      - .github/INSTALL_PLUGIN.md
       - .github/workflows/build-windows.yml
       - CMakeLists.txt
       - CMake/**
+      - LICENSE
+      - LICENSES/**
       - Plugins/**
+      - THIRD-PARTY-NOTICES.txt
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      package_version:
+        description: Version used in archive names; defaults to CMakeLists.txt
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: native-windows-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -60,6 +70,7 @@ jobs:
             qt_dir: msvc2022_64
             python_version: '3.12'
     env:
+      PACKAGE_VERSION: ${{ inputs.package_version }}
       PARAVIEW_VERSION: ${{ matrix.paraview_version }}
       PARAVIEW_COMMIT: ${{ matrix.paraview_commit }}
       PARAVIEW_SERIES: ${{ matrix.paraview_series }}
@@ -201,16 +212,24 @@ jobs:
       - name: Package zip
         shell: bash
         run: |
+          version="${PACKAGE_VERSION#v}"
+          if [ -z "$version" ]; then
+            version=$(sed -nE \
+              's/^project\(ParaViewMCP VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
+              CMakeLists.txt)
+          fi
+          test -n "$version"
+
           DLL=$(find install -name 'ParaViewMCP.dll' | head -1)
           XML=$(find install -name 'ParaViewMCP.plugins.xml' | head -1)
           if [ -z "$DLL" ]; then echo "ParaViewMCP.dll not found"; find install | head -50; exit 1; fi
-          DIR="ParaViewMCP-0.2.0-ParaView-${PARAVIEW_VERSION#v}-windows-x64"
+          DIR="ParaViewMCP-${version}-ParaView-${PARAVIEW_VERSION#v}-windows-x64"
           mkdir -p "$DIR"
           cp "$DLL" "$DIR/"
           [ -n "$XML" ] && cp "$XML" "$DIR/"
           cp LICENSE THIRD-PARTY-NOTICES.txt "$DIR/"
           cp -r LICENSES "$DIR/"
-          sed "s/6\\.0\\.1/${PARAVIEW_VERSION#v}/g; s/ParaViewMCP\\.so/ParaViewMCP.dll/g" .github/INSTALL_PLUGIN.md > "$DIR/INSTALL.md"
+          cp .github/INSTALL_PLUGIN.md "$DIR/INSTALL.md"
           7z a "$DIR.zip" "$DIR" > /dev/null
           sha256sum "$DIR.zip" > "$DIR.zip.sha256"
           echo "ARCHIVE_NAME=$DIR.zip" >> "$GITHUB_ENV"
@@ -224,3 +243,4 @@ jobs:
             ${{ env.ARCHIVE_NAME }}
             ${{ env.CHECKSUM_NAME }}
           if-no-files-found: error
+          retention-days: 7
