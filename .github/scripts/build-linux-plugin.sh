@@ -5,13 +5,8 @@ set -euxo pipefail
 : "${ARCHIVE_DIR:?ARCHIVE_DIR is required}"
 : "${PARAVIEW_SERIES:?PARAVIEW_SERIES is required}"
 
-if [[ "$PARAVIEW_SERIES" != "6.1" ]]; then
-  vtk_dependencies=$(find /builds/gitlab-kitware-sciviz-ci/build/install \
-    -name 'vtk-vtk-module-find-packages.cmake' -print -quit)
-  test -n "$vtk_dependencies"
-  grep -n -B 3 -A 8 -E \
-    'LibXml2|HDF5|Boost|NetCDF|catalyst|LibPROJ' "$vtk_dependencies"
-fi
+legacy_component_flag=OFF
+[[ "$PARAVIEW_SERIES" == "6.1" ]] || legacy_component_flag=ON
 
 cmake \
   -S . \
@@ -19,6 +14,7 @@ cmake \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX=/workspace/install \
   -DCMAKE_PREFIX_PATH=/builds/gitlab-kitware-sciviz-ci/build/install \
+  -DPARAVIEW_MCP_FIND_ALL_PARAVIEW_COMPONENTS="$legacy_component_flag" \
   -DBUILD_TESTING=OFF
 cmake --build build --parallel 2 --verbose
 cmake --install build

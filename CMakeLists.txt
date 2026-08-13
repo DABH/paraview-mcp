@@ -8,13 +8,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(BUILD_SHARED_LIBS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(
-  ParaView 5.13 REQUIRED
-  COMPONENTS
-    pqApplicationComponents
-    pqComponents
-    RemotingServerManagerPython
-)
+if(PARAVIEW_MCP_FIND_ALL_PARAVIEW_COMPONENTS)
+  find_package(ParaView 5.13 REQUIRED)
+else()
+  find_package(
+    ParaView 5.13 REQUIRED
+    COMPONENTS
+      pqApplicationComponents
+      pqComponents
+      RemotingServerManagerPython
+  )
+endif()
 
 string(REGEX MATCH "^[0-9]+\\.[0-9]+" PARAVIEW_MCP_PARAVIEW_SERIES "${ParaView_VERSION}")
 if(NOT PARAVIEW_MCP_PARAVIEW_SERIES)
