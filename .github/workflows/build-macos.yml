@@ -30,12 +30,16 @@ jobs:
     timeout-minutes: 350
     env:
       PARAVIEW_VERSION: v6.1.1
+      PARAVIEW_COMMIT: c373b13bca0b97680bae8de3e997c056404b9b77
       QT_VERSION: 6.9.0
+      AQTINSTALL_VERSION: 3.3.0
       # Python bundled by the official ParaView 6.1.1 .app (see header). Only
       # major.minor must match; setup-python resolves the latest 3.12.x patch.
       PYTHON_VERSION: '3.12'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ env.PYTHON_VERSION }} (ParaView 6.1.1's bundled Python)
         id: python
@@ -52,23 +56,23 @@ jobs:
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: /tmp/Qt
-          key: qt-${{ env.QT_VERSION }}-macos-clang64-v1
+          key: qt-${{ env.QT_VERSION }}-macos-clang64-aqt${{ env.AQTINSTALL_VERSION }}-v2
 
       - name: Install Qt ${{ env.QT_VERSION }} via aqtinstall
         if: steps.cache-qt.outputs.cache-hit != 'true'
         run: |
           python3 -m venv /tmp/aqtenv
-          /tmp/aqtenv/bin/pip install --quiet aqtinstall
+          /tmp/aqtenv/bin/pip install --quiet "aqtinstall==${AQTINSTALL_VERSION}"
           /tmp/aqtenv/bin/aqt install-qt mac desktop "${QT_VERSION}" clang_64 \
             -m qt5compat qtimageformats --outputdir /tmp/Qt
-          ls -d /tmp/Qt/${QT_VERSION}/macos
+          ls -d "/tmp/Qt/${QT_VERSION}/macos"
 
       - name: Save Qt cache
         if: steps.cache-qt.outputs.cache-hit != 'true'
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: /tmp/Qt
-          key: qt-${{ env.QT_VERSION }}-macos-clang64-v1
+          key: qt-${{ env.QT_VERSION }}-macos-clang64-aqt${{ env.AQTINSTALL_VERSION }}-v2
 
       # --- ParaView 6.1.1 SDK, built against Qt 6.9.0 --------------------------
       # Restore-only so a half-built SDK from a failed run is never cached.
@@ -77,14 +81,15 @@ jobs:
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: /tmp/paraview-sdk
-          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt${{ env.QT_VERSION }}-py${{ env.PYTHON_VERSION }}-v1
+          key: paraview-${{ env.PARAVIEW_COMMIT }}-macos-arm64-qt${{ env.QT_VERSION }}-py${{ env.PYTHON_VERSION }}-v2
 
       - name: Build ParaView SDK
         if: steps.cache-paraview.outputs.cache-hit != 'true'
         run: |
           QT_PREFIX="/tmp/Qt/${QT_VERSION}/macos"
-          git clone --recursive --branch ${{ env.PARAVIEW_VERSION }} --depth 1 \
+          git clone --recursive --branch "${PARAVIEW_VERSION}" --depth 1 \
             https://gitlab.kitware.com/paraview/paraview.git /tmp/paraview-src
+          test "$(git -C /tmp/paraview-src rev-parse HEAD)" = "${PARAVIEW_COMMIT}"
           # Idempotent Qt6 .arg(enum) cast normalizer. Almost certainly a no-op at
           # Qt 6.9.0 (ParaView 6.1.1's tested Qt), but harmless and protective.
           cd /tmp/paraview-src
@@ -120,7 +125,7 @@ jobs:
             -DVTK_WRAP_PYTHON=ON \
             -DPython3_EXECUTABLE="${{ steps.python.outputs.python-path }}" \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX"
-          cmake --build /tmp/paraview-build --parallel $(sysctl -n hw.ncpu)
+          cmake --build /tmp/paraview-build --parallel "$(sysctl -n hw.ncpu)"
           cmake --install /tmp/paraview-build
 
       - name: Save ParaView SDK cache
@@ -128,7 +133,7 @@ jobs:
         uses: actions/cache/save@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: /tmp/paraview-sdk
-          key: paraview-${{ env.PARAVIEW_VERSION }}-macos-arm64-qt${{ env.QT_VERSION }}-py${{ env.PYTHON_VERSION }}-v1
+          key: paraview-${{ env.PARAVIEW_COMMIT }}-macos-arm64-qt${{ env.QT_VERSION }}-py${{ env.PYTHON_VERSION }}-v2
 
       # --- Plugin, built against the same Qt 6.9.0 ----------------------------
       - name: Configure plugin
@@ -140,12 +145,12 @@ jobs:
             -G Ninja \
             -DCMAKE_PREFIX_PATH="/tmp/paraview-sdk;$QT_PREFIX" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$PWD/install \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install" \
             -DPython3_EXECUTABLE="${{ steps.python.outputs.python-path }}" \
             -DBUILD_TESTING=OFF
 
       - name: Build plugin
-        run: cmake --build build --parallel $(sysctl -n hw.ncpu)
+        run: cmake --build build --parallel "$(sysctl -n hw.ncpu)"
 
       - name: Install plugin
         run: cmake --install build
@@ -197,11 +202,15 @@ jobs:
           cp -r LICENSES "${ARCHIVE_DIR}/"
           sed 's/6\.0\.1/6.1.1/g' .github/INSTALL_PLUGIN.md > "${ARCHIVE_DIR}/INSTALL.md"
           tar czf "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}"
-          echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+          shasum -a 256 "${ARCHIVE_DIR}.tar.gz" > "${ARCHIVE_DIR}.tar.gz.sha256"
+          echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
+          echo "CHECKSUM_NAME=${ARCHIVE_DIR}.tar.gz.sha256" >> "$GITHUB_ENV"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: plugin-macos-arm64-pv6.1.1
-          path: ${{ env.ARCHIVE_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.CHECKSUM_NAME }}
           if-no-files-found: error
