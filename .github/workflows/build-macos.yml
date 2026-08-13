@@ -1,22 +1,15 @@
-name: Build macOS arm64 (ParaView 6.1.1)
+name: Build macOS arm64 (ParaView 5.13-6.1)
 
-# Standalone, manually-triggered build of the ParaViewMCP plugin against
-# ParaView 6.1.1 (Apple Silicon). Adapted from the `build-plugin-macos` job in
-# release.yml, decoupled from release-please so it can be run on demand.
+# Standalone, manually-triggered Apple Silicon builds of the ParaViewMCP plugin
+# against the latest patch releases in the supported ParaView 5.13-6.1 range.
 #
-# IMPORTANT: the plugin must be built against the SAME Qt that the official
-# ParaView 6.1.1 .app bundles (Qt 6.9.0). Homebrew's qt@6 is 6.11.x, which bakes
-# a hard `qt_version_tag_6_11` dependency into the plugin and makes the official
-# app refuse to dlopen it ("Symbol not found: _qt_version_tag_6_11"). So we fetch
-# Qt 6.9.0 via aqtinstall and build ParaView + the plugin against it.
+# IMPORTANT: the plugin must be built against a binary-compatible Qt and Python
+# for the target ParaView series. The matrix records those ABIs explicitly.
+# Qt 6 comes from aqtinstall; Qt 5 arm64 comes from Kitware's checksum-pinned
+# package used for ParaView builds.
 #
-# The same-version rule applies to Python. The official 6.1.1 .app bundles
-# Python 3.12 (ParaView-6.1.1-MPI-OSX11.0-Python3.12-arm64.dmg), and the plugin
-# compiles against the Python C API, so the SDK and the plugin are both built
-# with a pinned Python 3.12 (only major.minor matters for the ABI and for the
-# Python.framework/Versions/<X.Y>/ path inside the .app). An unpinned build
-# picks up whatever Python the runner ships (3.14 today), which is exactly the
-# mismatch that made the Windows DLL unloadable in official ParaView 6.1.1.
+# Python major.minor must match because the plugin compiles against its C API
+# and is loaded into ParaView's embedded interpreter.
 
 on:
   workflow_dispatch:
@@ -28,20 +21,40 @@ jobs:
   build-plugin-macos:
     runs-on: macos-14
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - paraview_version: v5.13.3
+            paraview_commit: d9100e04f9558222bbb48852d03035638812549b
+            paraview_series: '5.13'
+            qt_version: 5.15.2
+            python_version: '3.10'
+          - paraview_version: v6.0.1
+            paraview_commit: bdd52330012d733d3d6d85702a0498243af46272
+            paraview_series: '6.0'
+            qt_version: 6.9.0
+            python_version: '3.12'
+          - paraview_version: v6.1.1
+            paraview_commit: c373b13bca0b97680bae8de3e997c056404b9b77
+            paraview_series: '6.1'
+            qt_version: 6.9.0
+            python_version: '3.12'
     env:
-      PARAVIEW_VERSION: v6.1.1
-      PARAVIEW_COMMIT: c373b13bca0b97680bae8de3e997c056404b9b77
-      QT_VERSION: 6.9.0
+      PARAVIEW_VERSION: ${{ matrix.paraview_version }}
+      PARAVIEW_COMMIT: ${{ matrix.paraview_commit }}
+      PARAVIEW_SERIES: ${{ matrix.paraview_series }}
+      QT_VERSION: ${{ matrix.qt_version }}
       AQTINSTALL_VERSION: 3.3.0
-      # Python bundled by the official ParaView 6.1.1 .app (see header). Only
-      # major.minor must match; setup-python resolves the latest 3.12.x patch.
-      PYTHON_VERSION: '3.12'
+      # Python bundled by the matching official ParaView .app. Only major.minor
+      # must match; setup-python resolves the latest patch in that series.
+      PYTHON_VERSION: ${{ matrix.python_version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      - name: Set up Python ${{ env.PYTHON_VERSION }} (ParaView 6.1.1's bundled Python)
+      - name: Set up Python ${{ env.PYTHON_VERSION }} (matching ParaView)
         id: python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
@@ -50,7 +63,7 @@ jobs:
       - name: Install build tools
         run: brew install cmake ninja
 
-      # --- Qt 6.9.0 (must match ParaView 6.1.1's bundled Qt exactly) -----------
+      # --- Qt version matching the target ParaView binary ---------------------
       - name: Restore Qt cache
         id: cache-qt
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
@@ -59,13 +72,24 @@ jobs:
           key: qt-${{ env.QT_VERSION }}-macos-clang64-aqt${{ env.AQTINSTALL_VERSION }}-v2
 
       - name: Install Qt ${{ env.QT_VERSION }} via aqtinstall
-        if: steps.cache-qt.outputs.cache-hit != 'true'
+        if: steps.cache-qt.outputs.cache-hit != 'true' && startsWith(env.QT_VERSION, '6.')
         run: |
           python3 -m venv /tmp/aqtenv
           /tmp/aqtenv/bin/pip install --quiet "aqtinstall==${AQTINSTALL_VERSION}"
           /tmp/aqtenv/bin/aqt install-qt mac desktop "${QT_VERSION}" clang_64 \
             -m qt5compat qtimageformats --outputdir /tmp/Qt
           ls -d "/tmp/Qt/${QT_VERSION}/macos"
+
+      - name: Install Qt ${{ env.QT_VERSION }} for ParaView 5.13 arm64
+        if: steps.cache-qt.outputs.cache-hit != 'true' && startsWith(env.QT_VERSION, '5.')
+        run: |
+          archive=/tmp/qt-arm64.tar.xz
+          curl --fail --location --output "$archive" \
+            "https://gitlab.kitware.com/api/v4/projects/6955/packages/generic/qt/v5.15.2-20210519.0/qt-5.15.2-macosx11.0-arm64.tar.xz"
+          echo "e80d2647de461370bb65db60bc657148d196348b7393a2975d4a54bfba1b217f  $archive" | shasum -a 256 -c -
+          mkdir -p /tmp/Qt
+          tar -xf "$archive" -C /tmp/Qt
+          test -d /tmp/Qt/qt-5.15.2-macosx11.0-arm64
 
       - name: Save Qt cache
         if: steps.cache-qt.outputs.cache-hit != 'true'
@@ -74,7 +98,7 @@ jobs:
           path: /tmp/Qt
           key: qt-${{ env.QT_VERSION }}-macos-clang64-aqt${{ env.AQTINSTALL_VERSION }}-v2
 
-      # --- ParaView 6.1.1 SDK, built against Qt 6.9.0 --------------------------
+      # --- ParaView SDK, built against the matching Qt and Python ABI ----------
       # Restore-only so a half-built SDK from a failed run is never cached.
       - name: Restore ParaView SDK cache
         id: cache-paraview
@@ -86,12 +110,16 @@ jobs:
       - name: Build ParaView SDK
         if: steps.cache-paraview.outputs.cache-hit != 'true'
         run: |
-          QT_PREFIX="/tmp/Qt/${QT_VERSION}/macos"
+          if [[ "$QT_VERSION" == 5.* ]]; then
+            QT_PREFIX="/tmp/Qt/qt-5.15.2-macosx11.0-arm64"
+          else
+            QT_PREFIX="/tmp/Qt/${QT_VERSION}/macos"
+          fi
           git clone --recursive --branch "${PARAVIEW_VERSION}" --depth 1 \
             https://gitlab.kitware.com/paraview/paraview.git /tmp/paraview-src
           test "$(git -C /tmp/paraview-src rev-parse HEAD)" = "${PARAVIEW_COMMIT}"
-          # Idempotent Qt6 .arg(enum) cast normalizer. Almost certainly a no-op at
-          # Qt 6.9.0 (ParaView 6.1.1's tested Qt), but harmless and protective.
+          # Idempotent Qt6 .arg(enum) cast normalizer. This is a no-op when the
+          # source already contains the required casts.
           cd /tmp/paraview-src
           for f in \
             "Qt/Core/pqFlatTreeViewEventTranslator.cxx" \
@@ -135,10 +163,14 @@ jobs:
           path: /tmp/paraview-sdk
           key: paraview-${{ env.PARAVIEW_COMMIT }}-macos-arm64-qt${{ env.QT_VERSION }}-py${{ env.PYTHON_VERSION }}-v2
 
-      # --- Plugin, built against the same Qt 6.9.0 ----------------------------
+      # --- Plugin, built against the same Qt ABI ------------------------------
       - name: Configure plugin
         run: |
-          QT_PREFIX="/tmp/Qt/${QT_VERSION}/macos"
+          if [[ "$QT_VERSION" == 5.* ]]; then
+            QT_PREFIX="/tmp/Qt/qt-5.15.2-macosx11.0-arm64"
+          else
+            QT_PREFIX="/tmp/Qt/${QT_VERSION}/macos"
+          fi
           cmake \
             -S . \
             -B build \
@@ -165,11 +197,14 @@ jobs:
       # Python.framework that ships in the .app's Frameworks dir next to Qt.
       - name: Relink Qt + Python to @rpath (use ParaView's bundled copies)
         run: |
-          SO=install/lib/paraview-6.0/plugins/ParaViewMCP/ParaViewMCP.so
-          otool -L "$SO" | grep -oE '/[^ @][^ ]*/Qt[A-Za-z]+\.framework/Versions/A/Qt[A-Za-z]+' | while read -r old; do
+          SO=$(find install -name ParaViewMCP.so -print -quit)
+          test -n "$SO"
+          otool -L "$SO" | grep -oE '/[^ @][^ ]*/Qt[A-Za-z]+\.framework/Versions/[^/]+/Qt[A-Za-z]+' | while read -r old; do
             fw=$(basename "$old")
-            install_name_tool -change "$old" "@rpath/${fw}.framework/Versions/A/${fw}" "$SO"
-            echo "relinked: $fw"
+            framework_version=$(sed -E 's#^.*/Versions/([^/]+)/.*#\1#' <<< "$old")
+            new="@rpath/${fw}.framework/Versions/${framework_version}/${fw}"
+            install_name_tool -change "$old" "$new" "$SO"
+            echo "relinked: $old -> $new"
           done
           PY_REF="@rpath/Python.framework/Versions/${PYTHON_VERSION}/Python"
           otool -L "$SO" | awk -v ref="$PY_REF" \
@@ -187,20 +222,23 @@ jobs:
           test "$bad_py" -eq 0
           echo "=== Python refs (must be $PY_REF, or none if resolved dynamically) ==="
           otool -L "$SO" | grep -i python || echo "(none)"
-          echo "=== qt_version_tag the plugin now requires (must be 6_9) ==="
+          echo "=== qt_version_tag required by the plugin ==="
           nm -u "$SO" | grep -i qt_version_tag || true
 
       - name: Package tarball
         run: |
           VERSION=0.2.0
-          ARCHIVE_DIR="ParaViewMCP-${VERSION}-ParaView-6.1.1-macos-arm64"
+          ARCHIVE_DIR="ParaViewMCP-${VERSION}-ParaView-${PARAVIEW_VERSION#v}-macos-arm64"
           mkdir -p "${ARCHIVE_DIR}"
-          cp install/lib/paraview-6.0/plugins/ParaViewMCP/ParaViewMCP.so "${ARCHIVE_DIR}/"
-          cp install/lib/paraview-6.0/plugins/ParaViewMCP.plugins.xml "${ARCHIVE_DIR}/"
+          SO=$(find install -name ParaViewMCP.so -print -quit)
+          XML=$(find install -name ParaViewMCP.plugins.xml -print -quit)
+          test -n "$SO"
+          cp "$SO" "${ARCHIVE_DIR}/"
+          test -z "$XML" || cp "$XML" "${ARCHIVE_DIR}/"
           cp LICENSE "${ARCHIVE_DIR}/"
           cp THIRD-PARTY-NOTICES.txt "${ARCHIVE_DIR}/"
           cp -r LICENSES "${ARCHIVE_DIR}/"
-          sed 's/6\.0\.1/6.1.1/g' .github/INSTALL_PLUGIN.md > "${ARCHIVE_DIR}/INSTALL.md"
+          sed "s/6\\.0\\.1/${PARAVIEW_VERSION#v}/g" .github/INSTALL_PLUGIN.md > "${ARCHIVE_DIR}/INSTALL.md"
           tar czf "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}"
           shasum -a 256 "${ARCHIVE_DIR}.tar.gz" > "${ARCHIVE_DIR}.tar.gz.sha256"
           echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
@@ -209,7 +247,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: plugin-macos-arm64-pv6.1.1
+          name: plugin-macos-arm64-pv${{ matrix.paraview_series }}
           path: |
             ${{ env.ARCHIVE_NAME }}
             ${{ env.CHECKSUM_NAME }}

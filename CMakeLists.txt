@@ -9,12 +9,17 @@ set(BUILD_SHARED_LIBS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(
-  ParaView REQUIRED
+  ParaView 5.13 REQUIRED
   COMPONENTS
     pqApplicationComponents
     pqComponents
     RemotingServerManagerPython
 )
+
+string(REGEX MATCH "^[0-9]+\\.[0-9]+" PARAVIEW_MCP_PARAVIEW_SERIES "${ParaView_VERSION}")
+if(NOT PARAVIEW_MCP_PARAVIEW_SERIES)
+  message(FATAL_ERROR "Could not determine the ParaView major.minor version")
+endif()
 
 include(GNUInstallDirs)
 include(CTest)
@@ -39,7 +44,7 @@ paraview_plugin_build(
   INSTALL_EXPORT ParaViewMCP
   CMAKE_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/ParaViewMCP"
   PLUGINS_FILE_NAME "ParaViewMCP.plugins.xml"
-  LIBRARY_SUBDIRECTORY "paraview-6.0/plugins"
+  LIBRARY_SUBDIRECTORY "paraview-${PARAVIEW_MCP_PARAVIEW_SERIES}/plugins"
 )
 
 if(BUILD_TESTING)

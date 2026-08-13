@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- ParaView **6.0.1** (official binary from [paraview.org](https://www.paraview.org/download/))
+- The ParaView version named in this archive (official binary from [paraview.org](https://www.paraview.org/download/))
 - Matching platform (check the archive name: `linux-x86_64` or `macos-arm64`)
 
 ## Installation

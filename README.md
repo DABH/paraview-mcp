@@ -19,7 +19,7 @@ Connect [ParaView](https://www.paraview.org/) to LLM assistants through the [Mod
 
 ## Prerequisites
 
-- [ParaView 6.0.1](https://www.paraview.org/download/) with the MCP plugin loaded (see [Plugin Setup](#set-up-the-paraview-plugin))
+- [ParaView 5.13.3, 6.0.1, or 6.1.1](https://www.paraview.org/download/) with the matching MCP plugin loaded (see [Plugin Setup](#set-up-the-paraview-plugin))
 - [uv](https://docs.astral.sh/uv/)
 
 ## Quick Start
@@ -36,7 +36,7 @@ Then [set up the ParaView plugin](#set-up-the-paraview-plugin) and you're ready 
 
 Download a pre-built plugin binary from the [latest GitHub Release](https://github.com/failed33/paraview-mcp/releases/latest) for your platform (Linux x86_64 or macOS arm64). Extract the archive and follow the included `INSTALL.md`.
 
-Alternatively, build the plugin from source against your ParaView 6.0.1 SDK. See [CONTRIBUTING.md](CONTRIBUTING.md) for full build instructions.
+Alternatively, build the plugin from source against a ParaView 5.13 or newer SDK. See [CONTRIBUTING.md](CONTRIBUTING.md) for full build instructions. Binary compatibility is release-series specific, so use a plugin built for your ParaView major.minor version.
 
 Once installed:
 
