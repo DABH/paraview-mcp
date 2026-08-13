@@ -91,10 +91,12 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --quiet "aqtinstall==$env:AQTINSTALL_VERSION"
-          $modules = @('qtimageformats')
-          if ($env:QT_VERSION.StartsWith('6.')) { $modules += 'qt5compat' }
+          $moduleArgs = @()
+          if ($env:QT_VERSION.StartsWith('6.')) {
+            $moduleArgs = @('-m', 'qt5compat', 'qtimageformats')
+          }
           python -m aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH `
-            -m $modules --outputdir D:\Qt
+            @moduleArgs --outputdir D:\Qt
           $qt = "D:/Qt/$env:QT_VERSION/$env:QT_DIR"
           if (-not (Test-Path $qt)) { Write-Error "Qt not found at $qt"; exit 1 }
           "QT_PREFIX=$qt" | Out-File -FilePath $env:GITHUB_ENV -Append
