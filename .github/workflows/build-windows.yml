@@ -106,10 +106,12 @@ jobs:
           if ($env:QT_VERSION.StartsWith('6.')) {
             $moduleArgs = @('-m', 'qt5compat', 'qtimageformats')
           }
-          # TODO(aqtinstall#995): Reconsider the external extractor after the upstream
-          # fix is included in a stable aqtinstall release.
+          # TODO(aqtinstall#995): Remove the external extractor and serialized
+          # extraction after the upstream fix is included in a stable release.
           # https://github.com/miurahr/aqtinstall/issues/995
-          python -m aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH `
+          $aqtConfig = Join-Path $env:RUNNER_TEMP 'aqt.ini'
+          Set-Content -Path $aqtConfig -Value "[aqt]`nconcurrency = 1" -Encoding ascii
+          python -m aqt --config $aqtConfig install-qt windows desktop $env:QT_VERSION $env:QT_ARCH `
             @moduleArgs --external 7z --outputdir D:\Qt
           $qt = "D:/Qt/$env:QT_VERSION/$env:QT_DIR"
           if (-not (Test-Path $qt)) { Write-Error "Qt not found at $qt"; exit 1 }
