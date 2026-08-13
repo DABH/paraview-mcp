@@ -1,0 +1,128 @@
+name: Build Linux x86_64 (ParaView 5.13-6.1)
+
+# Kitware's official Linux binaries require plugins built in the same release
+# environment. These immutable paraview_org-plugin-devel images are published
+# specifically for building binary-compatible plugins; using a normal Ubuntu
+# SDK build can produce a plugin that compiles but fails against the download.
+
+on:
+  pull_request:
+    paths:
+      - .github/INSTALL_PLUGIN.md
+      - .github/workflows/build-linux.yml
+      - CMakeLists.txt
+      - CMake/**
+      - LICENSE
+      - LICENSES/**
+      - Plugins/**
+      - THIRD-PARTY-NOTICES.txt
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      package_version:
+        description: Version used in archive names; defaults to CMakeLists.txt
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-plugin-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - paraview_version: 5.13.3
+            paraview_series: '5.13'
+            builder_image: kitware/paraview_org-plugin-devel:5.13.3@sha256:36177a24147a76a36db9cf17e55882b64351f6a8e9b8bf1aaf11ef3510ee0608
+          - paraview_version: 6.0.1
+            paraview_series: '6.0'
+            builder_image: kitware/paraview_org-plugin-devel:6.0.1@sha256:b2113520d9ac56df3c07807c6f4104cb7859fb00789325e4906a3eab3367da74
+          - paraview_version: 6.1.1
+            paraview_series: '6.1'
+            builder_image: kitware/paraview_org-plugin-devel:6.1.1@sha256:d6798bd1ba18c9bf3431b0809b6900536ec59ace8232343133b112f7c2dbbe9c
+    container:
+      image: ${{ matrix.builder_image }}
+    env:
+      PACKAGE_VERSION: ${{ inputs.package_version }}
+      PARAVIEW_VERSION: ${{ matrix.paraview_version }}
+      PARAVIEW_SERIES: ${{ matrix.paraview_series }}
+      PARAVIEW_DIR: /builds/gitlab-kitware-sciviz-ci/build/install/lib/cmake/paraview-${{ matrix.paraview_series }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify Kitware release SDK
+        run: |
+          test -f "${PARAVIEW_DIR}/ParaViewConfig.cmake"
+          grep -F "${PARAVIEW_SERIES}" "${PARAVIEW_DIR}/ParaViewConfigVersion.cmake"
+
+      - name: Configure plugin
+        run: |
+          cmake \
+            -S . \
+            -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+            -DParaView_DIR="${PARAVIEW_DIR}" \
+            -DBUILD_TESTING=OFF
+
+      - name: Build and install plugin
+        run: |
+          cmake --build build --parallel 2
+          cmake --install build
+
+      - name: Verify binary dependencies
+        run: |
+          plugin=$(find install -name ParaViewMCP.so -print -quit)
+          test -n "$plugin"
+          readelf -d "$plugin"
+          if readelf -d "$plugin" | grep -E '(RPATH|RUNPATH).*(/builds|/paraview)'; then
+            echo "Plugin contains a build-environment runtime path" >&2
+            exit 1
+          fi
+
+      - name: Package tarball
+        run: |
+          version="${PACKAGE_VERSION}"
+          if [ -z "$version" ]; then
+            version=$(sed -nE \
+              's/^project\(ParaViewMCP VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
+              CMakeLists.txt)
+          fi
+          test -n "$version"
+
+          archive_dir="ParaViewMCP-${version}-ParaView-${PARAVIEW_VERSION}-linux-x86_64"
+          plugin=$(find install -name ParaViewMCP.so -print -quit)
+          plugin_xml=$(find install -name ParaViewMCP.plugins.xml -print -quit)
+          test -n "$plugin"
+
+          mkdir -p "$archive_dir"
+          cp "$plugin" "$archive_dir/"
+          test -z "$plugin_xml" || cp "$plugin_xml" "$archive_dir/"
+          cp LICENSE THIRD-PARTY-NOTICES.txt "$archive_dir/"
+          cp -r LICENSES "$archive_dir/"
+          cp .github/INSTALL_PLUGIN.md "$archive_dir/INSTALL.md"
+          tar czf "${archive_dir}.tar.gz" "$archive_dir"
+          sha256sum "${archive_dir}.tar.gz" > "${archive_dir}.tar.gz.sha256"
+          echo "ARCHIVE_NAME=${archive_dir}.tar.gz" >> "$GITHUB_ENV"
+          echo "CHECKSUM_NAME=${archive_dir}.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: plugin-linux-x86_64-pv${{ matrix.paraview_series }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.CHECKSUM_NAME }}
+          if-no-files-found: error
+          retention-days: 7
