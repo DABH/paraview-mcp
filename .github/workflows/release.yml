@@ -35,8 +35,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@e06108dd0aef18192324c70427afc47652e63a82 # v7.5.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
       - name: Build package
@@ -90,12 +90,12 @@ jobs:
             -S source \
             -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$PWD/install \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install" \
             -DParaView_DIR=/opt/paraview/lib/cmake/paraview-6.0 \
             -DBUILD_TESTING=OFF
 
       - name: Build
-        run: cmake --build build --parallel $(nproc)
+        run: cmake --build build --parallel "$(nproc)"
 
       - name: Install
         run: cmake --install build
@@ -112,7 +112,7 @@ jobs:
           cp -r source/LICENSES "${ARCHIVE_DIR}/"
           cp source/.github/INSTALL_PLUGIN.md "${ARCHIVE_DIR}/INSTALL.md"
           tar czf "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}"
-          echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+          echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -169,7 +169,7 @@ jobs:
             -DPARAVIEW_ENABLE_EXAMPLES=OFF \
             -DVTK_WRAP_PYTHON=ON \
             -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)"
-          cmake --build /tmp/paraview-build --parallel $(sysctl -n hw.ncpu)
+          cmake --build /tmp/paraview-build --parallel "$(sysctl -n hw.ncpu)"
           cmake --install /tmp/paraview-build
 
       - name: Configure
@@ -180,11 +180,11 @@ jobs:
             -G Ninja \
             -DCMAKE_PREFIX_PATH="/tmp/paraview-sdk;$(brew --prefix qt@6)" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$PWD/install \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install" \
             -DBUILD_TESTING=OFF
 
       - name: Build
-        run: cmake --build build --parallel $(sysctl -n hw.ncpu)
+        run: cmake --build build --parallel "$(sysctl -n hw.ncpu)"
 
       - name: Install
         run: cmake --install build
@@ -201,7 +201,7 @@ jobs:
           cp -r LICENSES "${ARCHIVE_DIR}/"
           cp .github/INSTALL_PLUGIN.md "${ARCHIVE_DIR}/INSTALL.md"
           tar czf "${ARCHIVE_DIR}.tar.gz" "${ARCHIVE_DIR}"
-          echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> $GITHUB_ENV
+          echo "ARCHIVE_NAME=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -230,4 +230,4 @@ jobs:
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$TAG_NAME" *.tar.gz --repo "${{ github.repository }}"
+        run: gh release upload "$TAG_NAME" ./*.tar.gz --repo "${{ github.repository }}"
